@@ -1,0 +1,199 @@
+{
+  "name": "WhatsApp AI Assistant - MVP (WhatsApp Cloud API, Groq)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["messages"]
+      },
+      "id": "whatsapp-trigger",
+      "name": "WhatsApp Trigger",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "webhookId": "REPLACE_AFTER_FIRST_SAVE",
+      "credentials": {
+        "whatsAppTriggerApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "WhatsApp (test number)" }
+      },
+      "notes": "Meta requires the webhook verify token (WHATSAPP_VERIFY_TOKEN) to match here and in your Meta app's webhook config. Uses the free test number until business verification is done."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.messages[0].type }}",
+              "rightValue": "audio",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-voice-or-text",
+      "name": "IF voice or text",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [420, 300],
+      "notes": "WhatsApp voice notes arrive as message type 'audio' with voice=true; regular audio file shares also arrive as 'audio', which is an acceptable MVP simplification."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v19.0/{{$json.messages[0].audio.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        }
+      },
+      "id": "get-media-url",
+      "name": "Get media URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 180],
+      "notes": "WhatsApp media is two-step: this call returns a short-lived 'url' field, which the next node then downloads with the same bearer token."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$json.url}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "id": "download-media",
+      "name": "Download media binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 180]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.APP1TRANSCRIBE_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.APP1TRANSCRIBE_API_KEY}}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formBinaryData", "name": "audio", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "id": "app1transcribe-call",
+      "name": "App1Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 180]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.GROQ_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { \"model\": \"llama-3.3-70b-versatile\", \"messages\": [ { \"role\": \"user\", \"content\": $json.finalPromptText } ], \"temperature\": 0.4, \"top_p\": 0.9, \"max_tokens\": 512 } }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "groq-call",
+      "name": "Groq generate reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 300],
+      "notes": "finalPromptText should be built from system_prompt.txt + business_rules.txt + last 5-10 messages + current message (mirrors prompts/prompt_builder.py). Add a Set/Code node before this one to assemble it. Groq's response text is at choices[0].message.content."
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {}
+      },
+      "id": "wait-for-approval",
+      "name": "Wait for human approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1520, 300],
+      "webhookId": "REPLACE_AFTER_FIRST_SAVE"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/webhook/incoming",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{$env.WEBHOOK_API_KEY}}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { \"sender_id\": $('WhatsApp Trigger').item.json.contacts[0].wa_id, \"sender_name\": $('WhatsApp Trigger').item.json.contacts[0].profile.name, \"channel\": \"whatsapp\", \"platform_message_id\": $('WhatsApp Trigger').item.json.messages[0].id, \"message_type\": $('WhatsApp Trigger').item.json.messages[0].type === \"audio\" ? \"voice\" : \"text\", \"original_text\": $('WhatsApp Trigger').item.json.messages[0].text ? $('WhatsApp Trigger').item.json.messages[0].text.body : null, \"transcript\": $json.text, \"generated_reply\": $('Groq generate reply').item.json.choices[0].message.content, \"n8n_resume_url\": $('Wait for human approval').item.json.resumeUrl, \"n8n_execution_id\": $execution.id, \"n8n_workflow_id\": $workflow.id } }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "post-to-backend",
+      "name": "POST to backend (pending review)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1300, 300],
+      "notes": "Verify field paths against a real WhatsApp webhook payload and a real Groq response before trusting this as-is."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { \"messaging_product\": \"whatsapp\", \"to\": $('WhatsApp Trigger').item.json.contacts[0].wa_id, \"type\": \"text\", \"text\": { \"body\": $json.body.approved_reply } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "whatsapp-send",
+      "name": "Send WhatsApp reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 300],
+      "notes": "Uses a raw Graph API call rather than a dedicated WhatsApp-send node, since the send needs to happen after the Wait node resumes with the approved text from the backend."
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": { "main": [[{ "node": "IF voice or text", "type": "main", "index": 0 }]] },
+    "IF voice or text": {
+      "main": [
+        [{ "node": "Get media URL", "type": "main", "index": 0 }],
+        [{ "node": "Groq generate reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get media URL": { "main": [[{ "node": "Download media binary", "type": "main", "index": 0 }]] },
+    "Download media binary": { "main": [[{ "node": "App1Transcribe", "type": "main", "index": 0 }]] },
+    "App1Transcribe": { "main": [[{ "node": "Groq generate reply", "type": "main", "index": 0 }]] },
+    "Groq generate reply": { "main": [[{ "node": "POST to backend (pending review)", "type": "main", "index": 0 }]] },
+    "POST to backend (pending review)": { "main": [[{ "node": "Wait for human approval", "type": "main", "index": 0 }]] },
+    "Wait for human approval": { "main": [[{ "node": "Send WhatsApp reply", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
