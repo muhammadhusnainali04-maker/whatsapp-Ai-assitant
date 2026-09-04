@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # WhatsApp AI Assistant — MVP scaffold (Day 1)
 
 Adapted from the client's "Reviewed & Updated Technical Implementation Plan":
@@ -106,3 +107,7 @@ ngrok http 5678   # (assuming n8n runs on its default port)
   IF node currently branches on `message.type === "audio"`, which covers
   both voice notes and shared audio files; that's an acceptable MVP
   simplification but worth knowing.
+=======
+# whatsapp-Ai-assitant
+Human-in-the-loop AI assistant for WhatsApp — detects text and voice messages, transcribes voice notes, drafts replies with Groq, and requires operator approval before sending.
+>>>>>>> a1f25fe44ff0f8dac8624a1262b7f1c8b70886e3
